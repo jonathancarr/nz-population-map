@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <script src="https://d3js.org/d3.v4.min.js"></script>
+  <style>
+  div.tooltip {
+    position: absolute;
+    max-width: 200px;
+    height: auto;
+    padding: 5px;
+    background-color: white;
+    border-radius: 10px;
+    bos-shadow: 4px 4px 10px rbga(0, 0, 0, 0.5);
+    pointer-events: none;
+    font-familty: sans-serif;
+    font-size: 12px;
+  }
+  </style>
+</head>
+<body>
+  <script>
+  var w = 960;
+  var h = 500;
+
+  //Stores selected region path
+  var centered;
+
+  //Path for drawing feautures
+  var path;
+
+  //Scale for colouring features by population
+  var colorscale = d3.scalePow()
+    .range(['#f1eef6','#bdc9e1','#74a9cf','#0570b0']);
+
+  var svg = d3.select("body")
+    .append("svg")
+    .attr("width", w)
+    .attr("height", h);
+
+  //Rectangle to receive click events
+  svg.append("rect")
+  .attr("fill", "none")
+  .attr("width", w)
+  .attr("height", h)
+  .attr("pointer-events", "all")
+  .on("click", clicked);
+
+  //Tooltip to display names and population data on mouseover
+  var tooltip = d3.select("body").append("div")
+    .attr("class", "tooltip")
+    .style("opacity", 0);
+
+  //Load cartographic and population data
+  d3.queue()
+  .defer(d3.json, "nz.json")
+  .defer(d3.json, "nz-district.json")
+  .defer(d3.csv, "regionpopulation.csv")
+  .defer(d3.csv, "districtpopulation.csv")
+  .await(function(err, regions, districts, regionpop, districtpop){
+    //Merge population data into region geojsons
+    for(var i = 0; i < districtpop.length; i++){
+      for(var j = 0; j < districts.features.length; j++){
+        if(districtpop[i].TA2013.slice(0,3) == districts.features[j].properties.TA2013){
+          districts.features[j].properties.population = parseInt(districtpop[i].population);
+          districts.features[j].properties.id = districts.features[j].properties.TA2013;
+          districts.features[j].properties.name = districts.features[j].properties.TA2013_NAM;
+        }
+      }
+    }
+
+    //Merge population data into district geojsons while finding max
+    var max = 0;
+    for(var i = 0; i < regionpop.length; i++){
+      if(parseInt(regionpop[i].population) > max){
+        max = parseInt(regionpop[i].population);
+      }
+      for(var j = 0; j < regions.features.length; j++){
+        if(regionpop[i].REGC2013.slice(0,3) == regions.features[j].properties.REGC2013){
+          regions.features[j].properties.population = parseInt(regionpop[i].population);
+          regions.features[j].properties.id = regions.features[j].properties.REGC2013;
+          regions.features[j].properties.name = regions.features[j].properties.REGC2013_N;
+        }
+      }
+    }
+
+    //Set domain for colourscale based on max population
+    colorscale.domain([0, max/100, max/10, max]);
+
+    //Set projection to fit map within svg
+    var projection = d3.geoIdentity()
+      .reflectY(true)
+      .fitSize([w, h], regions);
+    path = d3.geoPath()
+    .projection(projection);
+
+    //Draw districts and regions
+    drawFeatures(districts.features);
+    drawFeatures(regions.features);
+  });
+
+  //Draw an array of features
+  function drawFeatures(features){
+    svg.append("g")
+      .selectAll("path")
+      .data(features)
+      .enter()
+      .append("path")
+        .attr("d", path)
+        .attr("fill", function(d){
+          return colorscale(d.properties.population);
+        })
+        .attr("id", function(d){
+          return "feat-" + d.properties.id;
+        })
+        .style("stroke", "#FFFFFF")
+        .style("stroke-width", "1px")
+        .on("click", clicked)
+        .on("mouseover", updateTooltip)
+        .on("mouseout", fadeTooltip);
+  }
+
+  //Move tooltip to click location, show name and population of feature
+  function updateTooltip(feature){
+    tooltip.html("<strong> " + feature.properties.name + "</strong><br>Population: " + Math.round(feature.properties.population/1000) + "K")
+      .transition()
+      .style("opacity", 0.85)
+      .style("left", (d3.event.pageX) + "px")
+      .style("top", (d3.event.pageY - 20) + "px");
+
+  }
+
+  //Fade out tooltip
+  function fadeTooltip(){
+    tooltip.transition()
+    .style("opacity", 0);
+  }
+
+  //Zoom on clciked region, or zoom out to full map
+  function clicked(d) {
+    //Deselect previously selected feature
+    if(centered){
+      svg.select("#feat-"+centered.properties.id)
+        .style("opacity", "1")
+        .attr("pointer-events", "all");
+    }
+
+    var x, y, k;
+    //If clicked on a region not currently centered
+    if (d && centered !== d && typeof d.properties.REGC2013 != 'undefined') {
+      //Find center of region to translate to
+      var centroid = path.centroid(d);
+      x = centroid[0];
+      y = centroid[1];
+      //Find size of region to zoom to
+      var bounds = path.bounds(d);
+      var pathw = bounds[1][0] - bounds[0][0];
+      var pathh = bounds[1][1] - bounds[0][1];
+      var kx = w/pathw;
+      var ky = h/pathh;
+      k = 0.9*Math.min(kx, ky);
+      //Set centered to region
+      centered = d;
+    } else {
+      //Zoom out to full map
+      x = w / 2;
+      y = h / 2;
+      k = 1;
+      centered = null;
+    }
+
+    //Transform map based on x, y, k values
+    svg.selectAll("path")
+      .transition()
+      .duration(750)
+      .attr("transform", "translate(" + w / 2 + "," + h / 2 + ")scale(" + k + ")translate(" + -x + "," + -y + ")")
+      .style("stroke-width", 1 / k + "px");
+
+    //Show districts of selected region
+    if(centered){
+      svg.select("#feat-" + d.properties.id)
+        .style("opacity", "0")
+        .attr("pointer-events", "none");
+    }
+  }
+  </script>
+</body>
+</html>
